@@ -52,23 +52,47 @@ print_table() {
     echo "$border"
 }
 
-# 安装所需工具
+# 检查并安装必要的工具
 install_tools() {
-    for tool in ops strace jq; do
+    install_tool() {
+        local tool="$1"
         if ! command -v "$tool" &> /dev/null; then
             log "WARNING" "$tool not installed, trying to install..."
             case "$tool" in
                 ops)
                     curl https://ops.city/get.sh -sSfL | sh
-                    source ~/.bashrc
+                    # 判断当前使用的Shell，并执行相应的source命令
+                    case "$SHELL" in
+                        */bash) source ~/.bashrc ;;
+                        */zsh) source ~/.zshrc ;;
+                        *)
+                            log "WARNING" "Unsupported shell. Please manually source your shell configuration file."
+                            ;;
+                    esac
                     ;;
                 strace)
-                    sudo apt-get update
-                    sudo apt-get install -y strace
+                    if [ -f /etc/debian_version ]; then
+                        sudo apt-get update && sudo apt-get install -y strace
+                    elif [ -f /etc/centos-release ]; then
+                        sudo yum install -y strace
+                    elif [ -f /etc/arch-release ]; then
+                        sudo pacman -Sy strace --noconfirm
+                    else
+                        log "ERROR" "Unsupported OS. Please install strace manually."
+                        exit 1
+                    fi
                     ;;
                 jq)
-                    sudo apt-get update
-                    sudo apt-get install -y jq
+                    if [ -f /etc/debian_version ]; then
+                        sudo apt-get update && sudo apt-get install -y jq
+                    elif [ -f /etc/centos-release ]; then
+                        sudo yum install -y jq
+                    elif [ -f /etc/arch-release ]; then
+                        sudo pacman -Sy jq --noconfirm
+                    else
+                        log "ERROR" "Unsupported OS. Please install jq manually."
+                        exit 1
+                    fi
                     ;;
             esac
             if ! command -v "$tool" &> /dev/null; then
@@ -76,9 +100,15 @@ install_tools() {
                 exit 1
             fi
         fi
+    }
+
+    for tool in ops strace jq; do
+        install_tool "$tool"
     done
+
     clear
 }
+
 
 # 运行 strace 并过滤结果
 run_strace() {
@@ -168,7 +198,14 @@ copy_files_to_target() {
 
 # 导入 JSON 生成函数
 generate_config() {
-    log "INFO" "Generating config.json..."
+    log "INFO" "Generating or updating config.json..."
+    
+    # 初始化 json_content
+    json_content='{}'
+    if [ -f config.json ]; then
+        json_content=$(cat config.json)
+    fi
+    
     dirs='["usr"]'
     map_dirs='{}'
     map_dirs_empty=true
@@ -199,15 +236,10 @@ generate_config() {
         done
     fi
 
-    # 生成 JSON 内容
-    json_content=$(cat <<EOF
-{
-    "Dirs": $dirs,
-    "Args": ["${args[@]}"]
-}
-EOF
-    )
-
+    # 更新 JSON 内容
+    json_content=$(echo "$json_content" | jq '. + {"Dirs": '"$dirs"'}')
+    json_content=$(echo "$json_content" | jq '. + {"Args": ["'${args[@]}'"]}')
+    
     # 如果 files 不为空，则添加到 JSON 中
     if [ ${#files[@]} -gt 0 ]; then
         json_content=$(echo "$json_content" | jq '. + {"Files": '"$(printf '%s\n' "${files[@]}" | jq -R . | jq -s .)"'}')
@@ -227,8 +259,9 @@ EOF
 
     # 写入并格式化 config.json
     echo "$json_content" | jq '.' > config.json
-    log "INFO" "config.json generated successfully."
+    log "INFO" "config.json generated or updated successfully."
 }
+
 
 run_ops_pkg_load() {
     log "INFO" "Running test"
