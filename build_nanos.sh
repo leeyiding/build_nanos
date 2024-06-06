@@ -180,7 +180,10 @@ filter_final_result() {
 copy_files_to_target() {
     mkdir -p "$LIB_TARGET_DIR"
 
+    file_num=$(wc -l < "$FINAL_RESULT_LOG")
+    log "INFO" "find ${file_num} shared object..."
     log "INFO" "copy shared object to $LIB_TARGET_DIR..."
+    
     while read -r line; do
         filename=$(basename "$line")
         source_path="$line"
@@ -263,12 +266,16 @@ generate_config() {
 }
 
 
-run_ops_pkg_load() {
+run_ops() {
     log "INFO" "Running test"
 
     while true; do
         # 运行 ops pkg load 并捕获输出
-        load_result=$(ops pkg load "$PACKAGE" -c config.json --missing-files 2>&1)
+        if [ -n "$PACKAGE" ]; then
+            load_result=$(ops pkg load "$PACKAGE" -c config.json --missing-files 2>&1)
+        else
+            load_result=$(ops run "${cmd[0]}" -c config.json --missing-files 2>&1)
+        fi
 
         # 检查是否出现 "No space left on device" 错误
         echo "$load_result" | grep -q "No space left on device"
@@ -297,17 +304,16 @@ run_ops_pkg_load() {
             # 处理丢失的共享对象文件
             if [ -n "$missing_files" ]; then
                 log "INFO" "find missing files:\n$missing_files"
-                paths=$(find / -name "$missing_files" 2>/dev/null)
+
+                # 限制查找范围到特定目录
+                paths=$(find /usr/lib /lib /usr/local/lib -name "$missing_files" 2>/dev/null)
+
                 if [ -z "$paths" ]; then
-                    log "ERROR" "Shared object file $missing_files not found on the system. Please install it manually."
+                    log "ERROR" "Shared object file $missing_files not found in the specified directories. Please install it manually."
                     exit 1
                 fi
 
-                # 优先从 /usr/lib 或 /lib 开头的路径复制
-                src_path=$(echo "$paths" | grep -E '^/usr/lib|^/lib' | head -n 1)
-                if [ -z "$src_path" ]; then
-                    src_path=$(echo "$paths" | head -n 1)
-                fi
+                src_path=$(echo "$paths" | head -n 1)
 
                 dest_path="$LIB_TARGET_DIR/$(basename "$missing_files")"
                 cp "$src_path" "$dest_path"
@@ -360,7 +366,7 @@ main() {
     filter_final_result
     copy_files_to_target
     generate_config
-    run_ops_pkg_load
+    run_ops
 
     # 打印运行总用时
     end_time=$(date +%s)
