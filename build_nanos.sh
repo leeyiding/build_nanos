@@ -245,7 +245,12 @@ generate_config() {
     
     # 如果 files 不为空，则添加到 JSON 中
     if [ ${#files[@]} -gt 0 ]; then
-        json_content=$(echo "$json_content" | jq '. + {"Files": '"$(printf '%s\n' "${files[@]}" | jq -R . | jq -s .)"'}')
+        existing_files=$(echo "$json_content" | jq -r '.Files // empty | .[]')
+        for file in "${files[@]}"; do
+            if ! echo "$existing_files" | grep -q "^$file$"; then
+                json_content=$(echo "$json_content" | jq '.Files += ["'"$file"'"]')
+            fi
+        done
         files_empty=false
     fi
 
@@ -266,16 +271,12 @@ generate_config() {
 }
 
 
-run_ops() {
+run_ops_pkg_load() {
     log "INFO" "Running test"
 
     while true; do
         # 运行 ops pkg load 并捕获输出
-        if [ -n "$PACKAGE" ]; then
-            load_result=$(ops pkg load "$PACKAGE" -c config.json --missing-files 2>&1)
-        else
-            load_result=$(ops run "${cmd[0]}" -c config.json --missing-files 2>&1)
-        fi
+        load_result=$(ops pkg load "$PACKAGE" -c config.json --missing-files 2>&1)
 
         # 检查是否出现 "No space left on device" 错误
         echo "$load_result" | grep -q "No space left on device"
@@ -366,7 +367,7 @@ main() {
     filter_final_result
     copy_files_to_target
     generate_config
-    run_ops
+    run_ops_pkg_load
 
     # 打印运行总用时
     end_time=$(date +%s)
