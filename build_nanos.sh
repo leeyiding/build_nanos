@@ -18,6 +18,7 @@ NC='\033[0m' # No Color
 # 变量
 PACKAGE=""
 ENV_VARS=()
+SKIP_OPS=false
 
 # 打印日志函数
 log() {
@@ -33,8 +34,8 @@ log() {
 
 # 打印使用方法
 usage() {
-    log "INFO" "usage  : $0 [-p <package>] [-e <env_var1=value1> -e <env_var2=value2> ...] program"
-    log "INFO" "example: $0 -p eyberg/python_3.10.6 -e MY_VAR=123 -e ANOTHER_VAR=456 python main.py"
+    log "INFO" "usage  : $0 [-p <package>] [-e <env_var1=value1> -e <env_var2=value2> ...] [-s] program"
+    log "INFO" "example: $0 -p eyberg/python_3.10.6 -e MY_VAR=123 -e ANOTHER_VAR=456 -s python main.py"
     exit 1
 }
 
@@ -345,11 +346,13 @@ main() {
     start_time=$(date +%s)
 
     # 获取 -p 和 -e 参数值
-    while getopts ":p:e:" opt; do
+    while getopts ":p:e:s" opt; do
         case $opt in
             p) PACKAGE="$OPTARG"
             ;;
             e) ENV_VARS+=("$OPTARG")
+            ;;
+            s) SKIP_OPS=true
             ;;
             \?) log "ERROR" "Invalid parameters: -$OPTARG" >&2
                 exit 1
@@ -371,7 +374,11 @@ main() {
     filter_final_result
     copy_files_to_target
     generate_config
-    run_ops
+
+    # 检查是否跳过 run_ops
+    if [ "$SKIP_OPS" = false ]; then
+        run_ops
+    fi
 
     # 打印运行总用时
     end_time=$(date +%s)
