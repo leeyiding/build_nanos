@@ -18,7 +18,8 @@ NC='\033[0m' # No Color
 # 变量
 PACKAGE=""
 ENV_VARS=()
-SKIP_OPS=false
+SKIP_RUN_OPS=false
+TIMEOUT_DURATION=50 # 设置strace的超时时间
 
 # 打印日志函数
 log() {
@@ -34,8 +35,15 @@ log() {
 
 # 打印使用方法
 usage() {
-    log "INFO" "usage  : $0 [-p <package>] [-e <env_var1=value1> -e <env_var2=value2> ...] [-s] program"
-    log "INFO" "example: $0 -p eyberg/python_3.10.6 -e MY_VAR=123 -e ANOTHER_VAR=456 -s python main.py"
+    log "INFO" "usage  : $0 [-p <package>] [-e <env_var1=value1> -e <env_var2=value2> ...] [-t <timeout>] [-s] program"
+    log "INFO" "example: $0 -p eyberg/python_3.10.6 -e MY_VAR=123 -e ANOTHER_VAR=456 -t 100 -s python main.py"
+    log "INFO" ""
+    log "INFO" "Parameter Description:"
+    log "INFO" "  -p <package>             Specify the ops package to use"
+    log "INFO" "  -e <env_var=value>       Set environment variables, can be used multiple times to set multiple variables"
+    log "INFO" "  -t <timeout>             Set the timeout duration for strace (in seconds)"
+    log "INFO" "  -s                       Skip the ops run step"
+    log "INFO" "  program                  The program to run and its arguments"
     exit 1
 }
 
@@ -45,7 +53,7 @@ print_table() {
     local border
     printf -v border '+%.0s' {1..52}
     border="+${border}+"
-    
+
     echo "$border"
     echo "$input" | while IFS= read -r line; do
         printf "| %-50s |\n" "$line"
@@ -110,11 +118,10 @@ install_tools() {
     clear
 }
 
-
 # 运行 strace 并过滤结果
 run_strace() {
-    log "INFO" "Program running..."
-    env "${ENV_VARS[@]}" strace -f -e trace=openat "${cmd[@]}" 2>&1 | grep '\.so' | grep -v '= -1' | grep -v 'ld.so.cache' | awk -F '"' '/\.so/ {print $2}' > "$RESULT_LOG"
+    log "INFO" "Program running with timeout..."
+    env "${ENV_VARS[@]}" timeout "$TIMEOUT_DURATION" strace -f -e trace=openat "${cmd[@]}" 2>&1 | grep '\.so' | grep -v '= -1' | grep -v 'ld.so.cache' | awk -F '"' '/\.so/ {print $2}' > "$RESULT_LOG"
 }
 
 # 处理 result.log 中的路径
@@ -184,12 +191,12 @@ copy_files_to_target() {
     file_num=$(wc -l < "$FINAL_RESULT_LOG")
     log "INFO" "find ${file_num} shared object..."
     log "INFO" "copy shared object to $LIB_TARGET_DIR..."
-    
+
     while read -r line; do
         filename=$(basename "$line")
         source_path="$line"
         target_path="$LIB_TARGET_DIR/$filename"
-        
+
         if [ -f "/lib/x86_64-linux-gnu/$filename" ]; then
             cp "/lib/x86_64-linux-gnu/$filename" "$target_path"
             log "INFO" "/lib/x86_64-linux-gnu/$filename -> $target_path"
@@ -203,13 +210,13 @@ copy_files_to_target() {
 # 导入 JSON 生成函数
 generate_config() {
     log "INFO" "Generating or updating config.json..."
-    
+
     # 初始化 json_content
     json_content='{}'
     if [ -f config.json ]; then
         json_content=$(cat config.json)
     fi
-    
+
     dirs='["usr"]'
     map_dirs='{}'
     map_dirs_empty=true
@@ -243,7 +250,7 @@ generate_config() {
     # 更新 JSON 内容
     json_content=$(echo "$json_content" | jq '. + {"Dirs": '"$dirs"'}')
     json_content=$(echo "$json_content" | jq '. + {"Args": ["'${args[@]}'"]}')
-    
+
     # 如果 files 不为空，则添加到 JSON 中
     if [ ${#files[@]} -gt 0 ]; then
         existing_files=$(echo "$json_content" | jq -r '.Files // empty | .[]')
@@ -277,7 +284,7 @@ run_ops() {
 
     while true; do
         # 运行 ops pkg load 并捕获输出
-        if [ -n "$PACKAGE" ]; then
+        if [ -n "$PACKAGE" ];then
             load_result=$(ops pkg load "$PACKAGE" -c config.json --missing-files 2>&1)
         else
             load_result=$(ops run "${cmd[0]}" -c config.json --missing-files 2>&1)
@@ -308,13 +315,13 @@ run_ops() {
             fi
 
             # 处理丢失的共享对象文件
-            if [ -n "$missing_files" ]; then
+            if [ -n "$missing_files" ];then
                 log "INFO" "find missing files:\n$missing_files"
 
                 # 限制查找范围到特定目录
                 paths=$(find /usr/lib /lib /usr/local/lib -name "$missing_files" 2>/dev/null)
 
-                if [ -z "$paths" ]; then
+                if [ -z "$paths" ];then
                     log "ERROR" "Shared object file $missing_files not found in the specified directories. Please install it manually."
                     exit 1
                 fi
@@ -345,20 +352,22 @@ main() {
     # 记录开始时间
     start_time=$(date +%s)
 
-    # 获取 -p 和 -e 参数值
-    while getopts ":p:e:s" opt; do
+    # 获取 -p, -e, -s 和 -t 参数值
+    while getopts ":p:e:st:" opt; do
         case $opt in
             p) PACKAGE="$OPTARG"
             ;;
             e) ENV_VARS+=("$OPTARG")
             ;;
-            s) SKIP_OPS=true
+            s) SKIP_RUN_OPS=true
+            ;;
+            t) TIMEOUT_DURATION="$OPTARG"
             ;;
             \?) log "ERROR" "Invalid parameters: -$OPTARG" >&2
                 exit 1
             ;;
             :) log "ERROR" "Option -$OPTARG requires a value." >&2
-               exit 1
+            exit 1
             ;;
         esac
     done
@@ -376,7 +385,7 @@ main() {
     generate_config
 
     # 检查是否跳过 run_ops
-    if [ "$SKIP_OPS" = false ]; then
+    if [ "$SKIP_RUN_OPS" = false ]; then
         run_ops
     fi
 
@@ -388,3 +397,4 @@ main() {
 
 # 调用主函数
 main "$@"
+
