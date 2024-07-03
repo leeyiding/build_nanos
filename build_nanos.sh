@@ -19,7 +19,7 @@ NC='\033[0m' # No Color
 PACKAGE=""
 ENV_VARS=()
 SKIP_RUN_OPS=false
-TIMEOUT_DURATION=50 # 设置strace的超时时间
+TIMEOUT_DURATION="" # 设置strace的超时时间
 
 # 打印日志函数
 log() {
@@ -63,6 +63,14 @@ print_table() {
 
 # 检查并安装必要的工具
 install_tools() {
+    is_root() {
+        if [ "$EUID" -ne 0 ]; then
+            return 1
+        else
+            return 0
+        fi
+    }
+
     install_tool() {
         local tool="$1"
         if ! command -v "$tool" &> /dev/null; then
@@ -79,27 +87,21 @@ install_tools() {
                             ;;
                     esac
                     ;;
-                strace)
-                    if [ -f /etc/debian_version ]; then
-                        sudo apt-get update && sudo apt-get install -y strace
-                    elif [ -f /etc/centos-release ]; then
-                        sudo yum install -y strace
-                    elif [ -f /etc/arch-release ]; then
-                        sudo pacman -Sy strace --noconfirm
+                strace | jq)
+                    if is_root; then
+                        INSTALL_CMD=""
                     else
-                        log "ERROR" "Unsupported OS. Please install strace manually."
-                        exit 1
+                        INSTALL_CMD="sudo"
                     fi
-                    ;;
-                jq)
+
                     if [ -f /etc/debian_version ]; then
-                        sudo apt-get update && sudo apt-get install -y jq
+                        $INSTALL_CMD apt-get update && $INSTALL_CMD apt-get install -y "$tool"
                     elif [ -f /etc/centos-release ]; then
-                        sudo yum install -y jq
+                        $INSTALL_CMD yum install -y "$tool"
                     elif [ -f /etc/arch-release ]; then
-                        sudo pacman -Sy jq --noconfirm
+                        $INSTALL_CMD pacman -Sy "$tool" --noconfirm
                     else
-                        log "ERROR" "Unsupported OS. Please install jq manually."
+                        log "ERROR" "Unsupported OS. Please install $tool manually."
                         exit 1
                     fi
                     ;;
@@ -121,7 +123,11 @@ install_tools() {
 # 运行 strace 并过滤结果
 run_strace() {
     log "INFO" "Program running with timeout..."
-    env "${ENV_VARS[@]}" timeout "$TIMEOUT_DURATION" strace -f -e trace=openat "${cmd[@]}" 2>&1 | grep '\.so' | grep -v '= -1' | grep -v 'ld.so.cache' | awk -F '"' '/\.so/ {print $2}' > "$RESULT_LOG"
+    if [ -n "$TIMEOUT_DURATION" ]; then
+        env "${ENV_VARS[@]}" timeout "$TIMEOUT_DURATION" strace -f -e trace=openat "${cmd[@]}" 2>&1 | grep '\.so' | grep -v '= -1' | grep -v 'ld.so.cache' | awk -F '"' '/\.so/ {print $2}' > "$RESULT_LOG"
+    else
+        env "${ENV_VARS[@]}" strace -f -e trace=openat "${cmd[@]}" 2>&1 | grep '\.so' | grep -v '= -1' | grep -v 'ld.so.cache' | awk -F '"' '/\.so/ {print $2}' > "$RESULT_LOG"
+    fi
 }
 
 # 处理 result.log 中的路径
@@ -278,7 +284,6 @@ generate_config() {
     log "INFO" "config.json generated or updated successfully."
 }
 
-
 run_ops() {
     log "INFO" "Running test"
 
@@ -353,7 +358,7 @@ main() {
     start_time=$(date +%s)
 
     # 获取 -p, -e, -s 和 -t 参数值
-    while getopts ":p:e:st:" opt; do
+    while getopts ":p:e:st::" opt; do
         case $opt in
             p) PACKAGE="$OPTARG"
             ;;
@@ -361,7 +366,12 @@ main() {
             ;;
             s) SKIP_RUN_OPS=true
             ;;
-            t) TIMEOUT_DURATION="$OPTARG"
+            t)
+                if [ -z "$OPTARG" ]; then
+                    TIMEOUT_DURATION=30
+                else
+                    TIMEOUT_DURATION="$OPTARG"
+                fi
             ;;
             \?) log "ERROR" "Invalid parameters: -$OPTARG" >&2
                 exit 1
@@ -397,4 +407,3 @@ main() {
 
 # 调用主函数
 main "$@"
-
